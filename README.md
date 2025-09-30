@@ -21,6 +21,8 @@ This project demonstrates:
 pip install -r requirements.txt
    ```
 3. Fill in `config.json` or `.env` with your Azure/Graph details.
+   - Copy `.env.example` to `.env` and fill in `CLIENT_ID` and optionally `CLIENT_SECRET`.
+   - `CLIENT_SECRET` enables app-only (client credentials) flows; omit it to use interactive delegated flows.
 
 ## Usage
 - Implement the TODOs in each module for real API integration.
