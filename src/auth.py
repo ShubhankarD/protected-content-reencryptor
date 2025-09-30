@@ -5,9 +5,9 @@ Handles login flow for multiple Microsoft accounts.
 import json
 import os
 from typing import List, Optional
-
 import msal
 import logging
+from logging_setup import configure_file_logging
 from dotenv import load_dotenv
 
 
@@ -40,8 +40,14 @@ class AuthManager:
         # Allow environment variables to override config.json values
         client_id = os.getenv("CLIENT_ID") or config.get("client_id")
         client_secret = os.getenv("CLIENT_SECRET") or config.get("client_secret")
-        # Provide a sensible default authority if not set
-        authority = os.getenv("AUTHORITY") or config.get("authority") or "https://login.microsoftonline.com/common"
+        # If AUTHORITY isn't explicitly set, prefer building it from TENANT_ID if available
+        tenant_id = os.getenv("TENANT_ID") or config.get("tenant_id")
+        authority = os.getenv("AUTHORITY") or config.get("authority")
+        if not authority:
+            if tenant_id:
+                authority = f"https://login.microsoftonline.com/{tenant_id}"
+            else:
+                authority = "https://login.microsoftonline.com/common"
 
         if not client_id:
             raise ValueError("CLIENT_ID must be set via environment or config.json")
@@ -86,7 +92,21 @@ class AuthManager:
             self.logger.setLevel(getattr(logging, log_level))
         except Exception:
             self.logger.setLevel(logging.INFO)
-        if not self.logger.handlers:
+        # Configure reusable file logging; returns absolute path to log file
+        try:
+            # If user provided LOG_LEVEL use it; otherwise let helper default to DEBUG
+            # Attach file logging specifically to the AuthManager and msal loggers so
+            # their records are guaranteed to be written to the same file handler.
+            # If user provided LOG_LEVEL use it; otherwise let helper default to DEBUG
+            if os.getenv("LOG_LEVEL"):
+                msal_log_path = configure_file_logging(logger_names=["AuthManager", "msal"], level=log_level)
+            else:
+                msal_log_path = configure_file_logging(logger_names=["AuthManager", "msal"])
+        except Exception:
+            msal_log_path = "logs/msal.log"
+
+        # Ensure a stream handler exists for interactive console output (only add if missing)
+        if not any(isinstance(h, logging.StreamHandler) for h in self.logger.handlers):
             ch = logging.StreamHandler()
             ch.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s: %(message)s"))
             self.logger.addHandler(ch)
@@ -121,8 +141,12 @@ class AuthManager:
             result = self.app.acquire_token_for_client(scopes=scopes)
 
         if not result or "access_token" not in result:
-            # Log the full MSAL result dict for diagnostics
-            self.logger.debug("acquire_token_for_client failed, MSAL result: %s", result)
+            # Log the full MSAL result dict for diagnostics at ERROR so it appears
+            # in file logs even if DEBUG-level console logging is disabled.
+            try:
+                self.logger.error("acquire_token_for_client failed, MSAL result: %s", json.dumps(result, indent=2))
+            except Exception:
+                self.logger.error("acquire_token_for_client failed, MSAL result: %s", result)
         else:
             self.access_token = result["access_token"]
             self._save_cache()
@@ -150,7 +174,10 @@ class AuthManager:
                 self.access_token = result["access_token"]
                 return result
             else:
-                self.logger.debug("acquire_token_silent (interactive) returned: %s", result)
+                try:
+                    self.logger.error("acquire_token_silent (interactive) returned: %s", json.dumps(result, indent=2))
+                except Exception:
+                    self.logger.error("acquire_token_silent (interactive) returned: %s", result)
 
         try:
             result = self.app.acquire_token_interactive(scopes=scopes)
@@ -163,7 +190,10 @@ class AuthManager:
             self._save_cache()
             return result
         # Log result for troubleshooting
-        self.logger.debug("acquire_token_interactive failed, MSAL result: %s", result)
+        try:
+            self.logger.error("acquire_token_interactive failed, MSAL result: %s", json.dumps(result, indent=2))
+        except Exception:
+            self.logger.error("acquire_token_interactive failed, MSAL result: %s", result)
         raise Exception(f"Interactive login failed: {result.get('error_description') if result else 'no result'}")
 
     def get_token(self, scopes: Optional[List[str]] = None, interactive: bool = False) -> Optional[str]:
@@ -190,7 +220,10 @@ class AuthManager:
             if res and "access_token" in res:
                 return res["access_token"]
             else:
-                self.logger.debug("acquire_token_silent (get_token) returned: %s", res)
+                try:
+                    self.logger.error("acquire_token_silent (get_token) returned: %s", json.dumps(res, indent=2))
+                except Exception:
+                    self.logger.error("acquire_token_silent (get_token) returned: %s", res)
 
         if interactive:
             res = self.acquire_token_interactive(scopes)
